@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DebugElement, EmbeddedViewRef, getDebugNode } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { HttpErrorResponse } from '@angular/common/http';
+import { TranslateService } from '@ngx-translate/core';
 import { MockProvider } from 'ng-mocks';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 
 import { AdminSbomComponent } from './admin-sbom.component';
 import { AdminSbomService } from './admin-sbom.service';
 import { AlertService } from 'app/foundation/service/alert.service';
+import { AdminTitleBarService } from 'app/admin/shared/admin-title-bar.service';
+import { MockTranslateService } from 'test/helpers/mocks/service/mock-translate.service';
 import { ArtemisVersion, CombinedSbom, ComponentVulnerabilities, SbomComponent, Vulnerability } from './admin-sbom.model';
 
 describe('AdminSbomComponent', () => {
@@ -108,6 +113,7 @@ describe('AdminSbomComponent', () => {
                     error: vi.fn(),
                     success: vi.fn(),
                 }),
+                { provide: TranslateService, useClass: MockTranslateService },
             ],
         });
 
@@ -889,6 +895,317 @@ describe('AdminSbomComponent', () => {
             component.ngOnInit();
 
             expect(component.clientMetadata()?.componentName).toBe('Artemis Client');
+        });
+    });
+
+    describe('title bar actions', () => {
+        // Refresh and send report are projected into the admin title bar, so they are not part of this
+        // component's own view. Render the template registered with the real AdminTitleBarService.
+        const projectedViews: EmbeddedViewRef<unknown>[] = [];
+
+        let sbomSubject: Subject<CombinedSbom>;
+        let vulnerabilitySubject: Subject<ComponentVulnerabilities>;
+        let refreshSubject: Subject<ComponentVulnerabilities>;
+        let emailSubject: Subject<void>;
+
+        const noVulnerabilities: ComponentVulnerabilities = {
+            vulnerabilities: [],
+            totalVulnerabilities: 0,
+            criticalCount: 0,
+            highCount: 0,
+            mediumCount: 0,
+            lowCount: 0,
+            lastChecked: '2024-01-01T00:00:00Z',
+        };
+
+        function renderActions(): DebugElement {
+            const actionsTemplate = TestBed.inject(AdminTitleBarService).actionsTemplate();
+            expect(actionsTemplate).toBeDefined();
+            const view = actionsTemplate!.createEmbeddedView({});
+            projectedViews.push(view);
+            view.detectChanges();
+            const debugElement = getDebugNode(view.rootNodes[0]) as DebugElement;
+            expect(debugElement).toBeTruthy();
+            return debugElement;
+        }
+
+        function syncViews(): void {
+            fixture.detectChanges();
+            for (const view of projectedViews) {
+                view.detectChanges();
+            }
+        }
+
+        function button(actions: DebugElement, testId: string): HTMLButtonElement {
+            const element = actions.query(By.css(`[data-testid="${testId}"]`));
+            expect(element).toBeTruthy();
+            return element!.nativeElement;
+        }
+
+        function refreshButton(actions: DebugElement): HTMLButtonElement {
+            return button(actions, 'refresh-vulnerabilities-button');
+        }
+
+        function emailButton(actions: DebugElement): HTMLButtonElement {
+            return button(actions, 'send-vulnerability-email-button');
+        }
+
+        function expectBothDisabled(actions: DebugElement): void {
+            expect(refreshButton(actions).disabled).toBe(true);
+            expect(emailButton(actions).disabled).toBe(true);
+        }
+
+        function expectBothEnabled(actions: DebugElement): void {
+            expect(refreshButton(actions).disabled).toBe(false);
+            expect(emailButton(actions).disabled).toBe(false);
+        }
+
+        beforeEach(() => {
+            sbomSubject = new Subject<CombinedSbom>();
+            vulnerabilitySubject = new Subject<ComponentVulnerabilities>();
+            refreshSubject = new Subject<ComponentVulnerabilities>();
+            emailSubject = new Subject<void>();
+            vi.spyOn(sbomService, 'getCombinedSbom').mockReturnValue(sbomSubject.asObservable());
+            vi.spyOn(sbomService, 'getVulnerabilities').mockReturnValue(vulnerabilitySubject.asObservable());
+            vi.spyOn(sbomService, 'refreshVulnerabilities').mockReturnValue(refreshSubject.asObservable());
+            vi.spyOn(sbomService, 'sendVulnerabilityEmail').mockReturnValue(emailSubject.asObservable());
+            fixture.detectChanges();
+        });
+
+        afterEach(() => {
+            projectedViews.splice(0).forEach((view) => view.destroy());
+        });
+
+        it('shows both actions disabled before the initial SBOM request resolves', () => {
+            const actions = renderActions();
+
+            expect(sbomService.getCombinedSbom).toHaveBeenCalled();
+            expect(component.combinedSbom()).toBeUndefined();
+            expect(component.vulnerabilities()).toBeUndefined();
+            expectBothDisabled(actions);
+            expect(actions.query(By.css('[data-testid="download-server-sbom-button"]'))).toBeNull();
+            expect(actions.query(By.css('[data-testid="download-client-sbom-button"]'))).toBeNull();
+
+            refreshButton(actions).click();
+            emailButton(actions).click();
+
+            expect(sbomService.refreshVulnerabilities).not.toHaveBeenCalled();
+            expect(sbomService.sendVulnerabilityEmail).not.toHaveBeenCalled();
+        });
+
+        it('keeps both actions disabled until vulnerability data arrives, then enables their handlers', () => {
+            const actions = renderActions();
+
+            sbomSubject.next(mockCombinedSbom);
+            syncViews();
+
+            expect(component.loadingVulnerabilities()).toBe(true);
+            expect(component.vulnerabilities()).toBeUndefined();
+            expectBothDisabled(actions);
+            expect(actions.query(By.css('[data-testid="download-server-sbom-button"]'))).toBeTruthy();
+            expect(actions.query(By.css('[data-testid="download-client-sbom-button"]'))).toBeTruthy();
+
+            refreshButton(actions).click();
+            emailButton(actions).click();
+            expect(sbomService.refreshVulnerabilities).not.toHaveBeenCalled();
+            expect(sbomService.sendVulnerabilityEmail).not.toHaveBeenCalled();
+
+            vulnerabilitySubject.next(mockVulnerabilities);
+            syncViews();
+
+            expectBothEnabled(actions);
+            refreshButton(actions).click();
+            emailButton(actions).click();
+            expect(sbomService.refreshVulnerabilities).toHaveBeenCalledTimes(1);
+            expect(sbomService.sendVulnerabilityEmail).toHaveBeenCalledTimes(1);
+        });
+
+        it('enables both actions when the vulnerability response contains zero vulnerabilities', () => {
+            const actions = renderActions();
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.next(noVulnerabilities);
+            syncViews();
+
+            expect(component.vulnerabilities()).toEqual(noVulnerabilities);
+            expect(component.vulnerabilities()?.totalVulnerabilities).toBe(0);
+            expectBothEnabled(actions);
+        });
+
+        it('disables only refresh while a refresh is pending and restores it after success', () => {
+            const actions = renderActions();
+            const successSpy = vi.spyOn(alertService, 'success');
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.next(mockVulnerabilities);
+            syncViews();
+            expectBothEnabled(actions);
+
+            refreshButton(actions).click();
+            syncViews();
+
+            expect(refreshButton(actions).disabled).toBe(true);
+            expect(emailButton(actions).disabled).toBe(false);
+            expect(component.loadingVulnerabilities()).toBe(true);
+
+            refreshSubject.next(mockVulnerabilities);
+            syncViews();
+
+            expectBothEnabled(actions);
+            expect(component.loadingVulnerabilities()).toBe(false);
+            expect(successSpy).toHaveBeenCalledWith('artemisApp.dependencies.vulnerabilityRefreshSuccess');
+            expect(errorSpy).not.toHaveBeenCalled();
+        });
+
+        it('disables only refresh while a refresh is pending and restores it after an error', () => {
+            const actions = renderActions();
+            const successSpy = vi.spyOn(alertService, 'success');
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.next(mockVulnerabilities);
+            syncViews();
+
+            refreshButton(actions).click();
+            syncViews();
+            expect(refreshButton(actions).disabled).toBe(true);
+            expect(emailButton(actions).disabled).toBe(false);
+
+            refreshSubject.error(new Error('Refresh failed'));
+            syncViews();
+
+            expectBothEnabled(actions);
+            expect(component.loadingVulnerabilities()).toBe(false);
+            expect(component.vulnerabilities()).toEqual(mockVulnerabilities);
+            expect(errorSpy).toHaveBeenCalledWith('artemisApp.dependencies.vulnerabilityLoadError');
+            expect(successSpy).not.toHaveBeenCalled();
+        });
+
+        it('disables only send report while an email is pending and restores it after success', () => {
+            const actions = renderActions();
+            const successSpy = vi.spyOn(alertService, 'success');
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.next(mockVulnerabilities);
+            syncViews();
+
+            emailButton(actions).click();
+            syncViews();
+
+            expect(emailButton(actions).disabled).toBe(true);
+            expect(refreshButton(actions).disabled).toBe(false);
+            expect(component.sendingEmail()).toBe(true);
+
+            emailSubject.next();
+            syncViews();
+
+            expectBothEnabled(actions);
+            expect(component.sendingEmail()).toBe(false);
+            expect(successSpy).toHaveBeenCalledWith('artemisApp.dependencies.emailSentSuccess');
+            expect(errorSpy).not.toHaveBeenCalled();
+        });
+
+        it('disables only send report while an email is pending and restores it after an error', () => {
+            const actions = renderActions();
+            const successSpy = vi.spyOn(alertService, 'success');
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.next(mockVulnerabilities);
+            syncViews();
+
+            emailButton(actions).click();
+            syncViews();
+            expect(emailButton(actions).disabled).toBe(true);
+            expect(refreshButton(actions).disabled).toBe(false);
+
+            emailSubject.error(new Error('Send failed'));
+            syncViews();
+
+            expectBothEnabled(actions);
+            expect(component.sendingEmail()).toBe(false);
+            expect(errorSpy).toHaveBeenCalledWith('artemisApp.dependencies.emailSentError');
+            expect(successSpy).not.toHaveBeenCalled();
+        });
+
+        it('keeps both actions disabled and shows the load error when the SBOM request fails', () => {
+            const actions = renderActions();
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.error(new HttpErrorResponse({ status: 500 }));
+            syncViews();
+
+            expectBothDisabled(actions);
+            expect(component.sbomUnavailable()).toBe(false);
+            expect(component.vulnerabilities()).toBeUndefined();
+            expect(component.loading()).toBe(false);
+            expect(sbomService.getVulnerabilities).not.toHaveBeenCalled();
+            expect(errorSpy).toHaveBeenCalledWith('artemisApp.dependencies.loadError');
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-load-error-message"]')).toBeTruthy();
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-unavailable-message"]')).toBeNull();
+
+            refreshButton(actions).click();
+            emailButton(actions).click();
+            expect(sbomService.refreshVulnerabilities).not.toHaveBeenCalled();
+            expect(sbomService.sendVulnerabilityEmail).not.toHaveBeenCalled();
+        });
+
+        it('keeps both actions disabled and shows the unavailable banner when the SBOM responds 404', () => {
+            const actions = renderActions();
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.error(new HttpErrorResponse({ status: 404 }));
+            syncViews();
+
+            expectBothDisabled(actions);
+            expect(component.sbomUnavailable()).toBe(true);
+            expect(component.loading()).toBe(false);
+            expect(component.vulnerabilities()).toBeUndefined();
+            expect(sbomService.getVulnerabilities).not.toHaveBeenCalled();
+            expect(errorSpy).not.toHaveBeenCalled();
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-unavailable-message"]')).toBeTruthy();
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-load-error-message"]')).toBeNull();
+        });
+
+        it('keeps both actions disabled when the first vulnerability request fails', () => {
+            const actions = renderActions();
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.error(new HttpErrorResponse({ status: 500 }));
+            syncViews();
+
+            expectBothDisabled(actions);
+            expect(component.vulnerabilities()).toBeUndefined();
+            expect(component.loadingVulnerabilities()).toBe(false);
+            expect(component.combinedSbom()).toEqual(mockCombinedSbom);
+            expect(errorSpy).toHaveBeenCalledWith('artemisApp.dependencies.vulnerabilityLoadError');
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-load-error-message"]')).toBeNull();
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-unavailable-message"]')).toBeNull();
+            expect(fixture.nativeElement.querySelector('[jhiTranslate="artemisApp.dependencies.vulnerabilitiesNotLoaded"]')).toBeTruthy();
+
+            refreshButton(actions).click();
+            emailButton(actions).click();
+            expect(sbomService.refreshVulnerabilities).not.toHaveBeenCalled();
+            expect(sbomService.sendVulnerabilityEmail).not.toHaveBeenCalled();
+        });
+
+        it('keeps both actions disabled without a toast when the first vulnerability request returns 404', () => {
+            const actions = renderActions();
+            const errorSpy = vi.spyOn(alertService, 'error');
+
+            sbomSubject.next(mockCombinedSbom);
+            vulnerabilitySubject.error(new HttpErrorResponse({ status: 404 }));
+            syncViews();
+
+            expectBothDisabled(actions);
+            expect(component.vulnerabilities()).toBeUndefined();
+            expect(component.loadingVulnerabilities()).toBe(false);
+            expect(errorSpy).not.toHaveBeenCalled();
+            expect(fixture.nativeElement.querySelector('[data-testid="sbom-load-error-message"]')).toBeNull();
+            expect(fixture.nativeElement.querySelector('[jhiTranslate="artemisApp.dependencies.vulnerabilitiesNotLoaded"]')).toBeTruthy();
         });
     });
 });

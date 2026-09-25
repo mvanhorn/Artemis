@@ -1,32 +1,30 @@
 <h5 *adminTitleBarTitle id="sbom-page-heading" class="mb-0" jhiTranslate="artemisApp.dependencies.title"></h5>
 
 <div *adminTitleBarActions class="flex gap-2">
-    @if (vulnerabilities()) {
-        <button
-            tumUiButton
-            severity="secondary"
-            size="small"
-            variant="outlined"
-            (click)="refreshVulnerabilities()"
-            [disabled]="loadingVulnerabilities()"
-            data-testid="refresh-vulnerabilities-button"
-        >
-            <fa-icon [icon]="faRefresh" [animation]="loadingVulnerabilities() ? 'spin' : undefined" />
-            <span jhiTranslate="artemisApp.dependencies.refreshVulnerabilities"></span>
-        </button>
-        <button
-            tumUiButton
-            severity="secondary"
-            size="small"
-            variant="outlined"
-            (click)="sendVulnerabilityEmail()"
-            [disabled]="sendingEmail()"
-            data-testid="send-vulnerability-email-button"
-        >
-            <fa-icon [icon]="sendingEmail() ? faSpinner : faEnvelope" [animation]="sendingEmail() ? 'spin' : undefined" />
-            <span jhiTranslate="artemisApp.dependencies.sendEmail"></span>
-        </button>
-    }
+    <button
+        tumUiButton
+        severity="secondary"
+        size="small"
+        variant="outlined"
+        (click)="refreshVulnerabilities()"
+        [disabled]="!vulnerabilities() || loadingVulnerabilities()"
+        data-testid="refresh-vulnerabilities-button"
+    >
+        <fa-icon [icon]="faRefresh" [animation]="loadingVulnerabilities() ? 'spin' : undefined" />
+        <span jhiTranslate="artemisApp.dependencies.refreshVulnerabilities"></span>
+    </button>
+    <button
+        tumUiButton
+        severity="secondary"
+        size="small"
+        variant="outlined"
+        (click)="sendVulnerabilityEmail()"
+        [disabled]="!vulnerabilities() || sendingEmail()"
+        data-testid="send-vulnerability-email-button"
+    >
+        <fa-icon [icon]="sendingEmail() ? faSpinner : faEnvelope" [animation]="sendingEmail() ? 'spin' : undefined" />
+        <span jhiTranslate="artemisApp.dependencies.sendEmail"></span>
+    </button>
     @if (combinedSbom()?.server) {
         <button tumUiButton severity="secondary" size="small" variant="outlined" (click)="downloadSbom('server')" data-testid="download-server-sbom-button">
             <fa-icon [icon]="faDownload" />
